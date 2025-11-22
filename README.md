@@ -513,6 +513,31 @@ You can then honestly say this project uses:
 
 while keeping the core stack simple.
 
+## ETL: Export profiles from Postgres to BigQuery
+
+To simulate a hybrid audiences setup (operational store + warehouse), this repo includes a tiny ETL script that exports `profiles` from Postgres into BigQuery.
+
+### Setup
+
+1. **Create a BigQuery project + service account**
+
+   - Create a Google Cloud project (or reuse an existing one).
+   - Enable the **BigQuery API**.
+   - Create a **service account** with `BigQuery Data Editor` (or similar) permissions.
+   - Download the JSON key file.
+
+2. **Set environment variables**
+
+   In the backend `.env`:
+
+   ```env
+   DATABASE_URL=postgres://cdp:cdp@localhost:5433/cdp  # adjust port if needed
+
+   BIGQUERY_PROJECT_ID=your-gcp-project-id
+   BIGQUERY_DATASET=mini_cdp
+   BIGQUERY_TABLE_PROFILES=profiles_export
+
+
 ---
 
 ## 8. Next Steps / Ideas
