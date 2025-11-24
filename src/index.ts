@@ -33,6 +33,22 @@ function quoteCsvValue(value: any): string {
 
 // ---- Routes ----
 
+// Basic root route for convenience
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
+    message: "Mini CDP API is running",
+    docs: [
+      { path: "/health", description: "Check API and database connectivity" },
+      { path: "/identify", description: "POST to upsert a customer profile" },
+      { path: "/track", description: "POST to track an event" },
+      { path: "/audiences", description: "POST to create audiences" },
+      { path: "/audiences/:id/rebuild", description: "POST to rebuild audience membership" },
+      { path: "/audiences/:id/export", description: "GET to export audience members as CSV" },
+      { path: "/profiles", description: "GET to list profiles" },
+    ],
+  });
+});
+
 // Health check
 app.get("/health", async (_req: Request, res: Response) => {
   try {

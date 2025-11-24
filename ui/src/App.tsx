@@ -27,44 +27,49 @@ interface Audience {
   last_built_at: string | null;
 }
 
+interface ScenarioContext {
+  amount: number;
+  merchant: string;
+  category: string;
+  occurredAt: string;
+}
+
+interface HybridEvaluation {
+  isWarehouseSegment: boolean;
+  isRealtimeQualified: boolean;
+  isHybridMember: boolean;
+  totalSpend: number;
+  lastSeenDays: number | null;
+  amount: number;
+  category: string;
+}
+
 const App: React.FC = () => {
-  // Identify form state
-  const [idEmail, setIdEmail] = useState("");
-  const [idUserId, setIdUserId] = useState("");
-  const [idAnon, setIdAnon] = useState("");
-  const [idTraits, setIdTraits] = useState('{"plan": "gold"}');
+  // Scenario (checkout) state
+  const [scenarioEmail, setScenarioEmail] = useState("fan@example.com");
+  const [scenarioUserId, setScenarioUserId] = useState("ticket_buyer_123");
+  const [scenarioAmount, setScenarioAmount] = useState("120.00");
+  const [scenarioCategory, setScenarioCategory] = useState("Concert ticket");
+  const [scenarioStep, setScenarioStep] = useState<number>(0);
+  const [scenarioContext, setScenarioContext] = useState<ScenarioContext | null>(
+    null
+  );
 
-  // Track form state
-  const [eventType, setEventType] = useState("page_view");
-  const [evUserId, setEvUserId] = useState("");
-  const [evAnon, setEvAnon] = useState("");
-  const [evAmount, setEvAmount] = useState("");
-  const [evProps, setEvProps] = useState('{"page": "/home"}');
-
-  // Profiles / selection
+  // Data state
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
   const [profileEvents, setProfileEvents] = useState<EventRecord[]>([]);
-
-  // Audiences
   const [audiences, setAudiences] = useState<Audience[]>([]);
-  const [audName, setAudName] = useState("High value last 30 days");
-  const [audDef, setAudDef] = useState(
-    JSON.stringify(
-      {
-        min_total_spend: 100,
-        days_since_last_event: 30,
-      },
-      null,
-      2
-    )
+  const [highValueAudienceId, setHighValueAudienceId] = useState<number | null>(
+    null
   );
+  const [hybridEval, setHybridEval] = useState<HybridEvaluation | null>(null);
 
-  // Messages
+  // Messages/loading
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingScenario, setLoadingScenario] = useState(false);
 
-  // Helpers
   function showMessage(msg: string) {
     setMessage(msg);
     setError(null);
@@ -78,10 +83,14 @@ const App: React.FC = () => {
   async function fetchProfiles() {
     try {
       const res = await fetch(`${API_BASE}/profiles`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
       const data = await res.json();
       setProfiles(data.profiles || []);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("fetchProfiles error:", err);
       showError("Failed to load profiles");
     }
   }
@@ -89,10 +98,19 @@ const App: React.FC = () => {
   async function fetchAudiences() {
     try {
       const res = await fetch(`${API_BASE}/audiences`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
       const data = await res.json();
-      setAudiences(data.audiences || []);
-    } catch (err) {
-      console.error(err);
+      const list: Audience[] = data.audiences || [];
+      setAudiences(list);
+      const hv = list.find(
+        (a) => a.name.toLowerCase() === "high value last 30 days"
+      );
+      setHighValueAudienceId(hv ? hv.id : null);
+    } catch (err: any) {
+      console.error("fetchAudiences error:", err);
       showError("Failed to load audiences");
     }
   }
@@ -102,183 +120,400 @@ const App: React.FC = () => {
     fetchAudiences();
   }, []);
 
-  async function handleIdentify(e: React.FormEvent) {
-    e.preventDefault();
+  async function loadProfileEvents(profileId: string) {
     try {
-      let traitsObj: any = {};
-      if (idTraits.trim()) {
-        traitsObj = JSON.parse(idTraits);
-      }
-
-      const res = await fetch(`${API_BASE}/identify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: idEmail || undefined,
-          user_id: idUserId || undefined,
-          anonymous_id: idAnon || undefined,
-          traits: traitsObj,
-        }),
-      });
-
+      const res = await fetch(`${API_BASE}/profiles/${profileId}/events`);
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Identify failed");
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
       }
-
-      const body = await res.json();
-      showMessage("Profile created/updated");
-      await fetchProfiles();
-      if (body.profile) {
-        setSelectedProfile(body.profile);
-        await loadProfileEvents(body.profile.id);
-      }
+      const data = await res.json();
+      setProfileEvents(data.events || []);
     } catch (err: any) {
-      console.error(err);
-      showError(err.message || "Error in identify");
-    }
-  }
-
-  async function handleTrack(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      let propsObj: any = {};
-      if (evProps.trim()) {
-        propsObj = JSON.parse(evProps);
-      }
-
-      // If amount set, merge into properties
-      if (evAmount.trim()) {
-        propsObj.amount = Number(evAmount);
-      }
-
-      const res = await fetch(`${API_BASE}/track`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event_type: eventType,
-          user_id: evUserId || undefined,
-          anonymous_id: evAnon || undefined,
-          properties: propsObj,
-        }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Track failed");
-      }
-
-      const body = await res.json();
-      showMessage("Event tracked");
-      await fetchProfiles();
-      if (body.profile) {
-        setSelectedProfile(body.profile);
-        await loadProfileEvents(body.profile.id);
-      }
-    } catch (err: any) {
-      console.error(err);
-      showError(err.message || "Error in track");
+      console.error("loadProfileEvents error:", err);
+      showError("Failed to load profile events");
     }
   }
 
   async function selectProfile(p: Profile) {
     setSelectedProfile(p);
+    setHybridEval(
+      scenarioContext ? evaluateHybridAudience(p, scenarioContext) : null
+    );
     await loadProfileEvents(p.id);
   }
 
-  async function loadProfileEvents(profileId: string) {
-    try {
-      const res = await fetch(`${API_BASE}/profiles/${profileId}/events`);
-      const data = await res.json();
-      setProfileEvents(data.events || []);
-    } catch (err) {
-      console.error(err);
-      showError("Failed to load profile events");
+  async function ensureDefaultHighValueAudience() {
+    if (highValueAudienceId) return highValueAudienceId;
+
+    const definition = {
+      min_total_spend: 100,
+      days_since_last_event: 30,
+    };
+
+    const res = await fetch(`${API_BASE}/audiences`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "High value last 30 days",
+        definition,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || "Failed to create default audience");
     }
+
+    const body = await res.json();
+    const aud: Audience = body.audience;
+    setAudiences((prev) => [aud, ...prev]);
+    setHighValueAudienceId(aud.id);
+    return aud.id;
   }
 
-  async function handleCreateAudience(e: React.FormEvent) {
-    e.preventDefault();
+  function evaluateHybridAudience(
+    profile: Profile | null,
+    ctx: ScenarioContext | null
+  ): HybridEvaluation | null {
+    if (!profile || !ctx) return null;
+
+    const totalSpend = Number(profile.total_spend || 0);
+    const now = Date.now();
+    let lastSeenDays: number | null = null;
+    if (profile.last_seen_at) {
+      const last = new Date(profile.last_seen_at).getTime();
+      lastSeenDays = (now - last) / (1000 * 60 * 60 * 24);
+    }
+
+    // Treat total_spend as a warehouse-style aggregate (e.g., lifetime or 90-day spend).
+    const isWarehouseSegment = totalSpend >= 300; // “high LTV / high-value segment”
+
+    // Real-time session: high-intent, high-value concert checkout
+    const isRealtimeQualified =
+      ctx.amount >= 100 && ctx.category.toLowerCase().includes("concert");
+
+    const isHybridMember = isWarehouseSegment && isRealtimeQualified;
+
+    return {
+      isWarehouseSegment,
+      isRealtimeQualified,
+      isHybridMember,
+      totalSpend,
+      lastSeenDays,
+      amount: ctx.amount,
+      category: ctx.category,
+    };
+  }
+
+  function buildOfferExplanation(e: HybridEvaluation | null): string | null {
+    if (!e) return null;
+
+    if (e.isHybridMember) {
+      return (
+        "Hybrid audience: shopper is a high-value customer (warehouse aggregate) " +
+        "and currently in a high-intent concert checkout (real-time). " +
+        "Show a premium, revenue-maximizing offer (e.g., VIP upgrade, add-on experiences)."
+      );
+    }
+
+    if (e.isWarehouseSegment && !e.isRealtimeQualified) {
+      return (
+        "Warehouse segment only: customer is high-value overall, " +
+        "but this session doesn’t meet the real-time criteria. " +
+        "Show a softer loyalty or retention offer."
+      );
+    }
+
+    if (!e.isWarehouseSegment && e.isRealtimeQualified) {
+      return (
+        "Real-time only: this checkout is high value, " +
+        "but the customer is not yet in the high-LTV segment. " +
+        "Show an acquisition or cross-sell offer with lower risk."
+      );
+    }
+
+    return (
+      "Outside the hybrid audience: use a generic or control experience to protect the core checkout."
+    );
+  }
+
+  async function runCheckoutSimulation() {
+    setLoadingScenario(true);
+    setMessage(null);
+    setError(null);
+    setHybridEval(null);
+    setScenarioStep(0);
+
     try {
-      const def = JSON.parse(audDef);
-      const res = await fetch(`${API_BASE}/audiences`, {
+      const email = scenarioEmail.trim();
+      const userId = scenarioUserId.trim();
+      const amountNum = Number(scenarioAmount || "0");
+
+      if (!email && !userId) {
+        throw new Error("Please enter an email or user ID for the shopper.");
+      }
+
+      // 1) Checkout event occurs
+      setScenarioStep(1);
+
+      // 2) CDP collects & unifies identity (simulate traits that could come from warehouse)
+      const identifyRes = await fetch(`${API_BASE}/identify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: audName,
-          definition: def,
+          email: email || undefined,
+          user_id: userId || undefined,
+          traits: {
+            merchant: "TicketingPartner",
+            vertical: "Events",
+            // Example of attributes that would normally be synced from a warehouse/CRM
+            crm_ltv_bucket: "HIGH", // pretend this came from BigQuery/warehouse
+            crm_region: "US",
+          },
         }),
       });
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to create audience");
+      if (!identifyRes.ok) {
+        const body = await identifyRes.json().catch(() => ({}));
+        throw new Error(body.error || "Identify failed");
       }
+      const identifyBody = await identifyRes.json();
+      const profileAfterIdentify: Profile | undefined = identifyBody.profile;
 
-      showMessage("Audience created");
-      setAudName("");
-      await fetchAudiences();
-    } catch (err: any) {
-      console.error(err);
-      showError(err.message || "Error creating audience");
-    }
-  }
+      setScenarioStep(2);
 
-  async function handleRebuildAudience(id: number) {
-    try {
-      const res = await fetch(`${API_BASE}/audiences/${id}/rebuild`, {
+      // 3) Track the purchase event (real-time signal)
+      const eventOccurredAt = new Date().toISOString();
+      const merchant = "TicketingPartner";
+      const category = scenarioCategory || "Concert ticket";
+
+      const trackRes = await fetch(`${API_BASE}/track`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event_type: "purchase",
+          user_id: userId || undefined,
+          email: email || undefined,
+          properties: {
+            merchant,
+            category,
+            amount: amountNum,
+            currency: "USD",
+          },
+          occurred_at: eventOccurredAt,
+        }),
       });
 
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      if (!trackRes.ok) {
+        const body = await trackRes.json().catch(() => ({}));
+        throw new Error(body.error || "Track failed");
+      }
+
+      const trackBody = await trackRes.json();
+      const profileAfterTrack: Profile | undefined = trackBody.profile;
+
+      const ctx: ScenarioContext = {
+        amount: amountNum,
+        merchant,
+        category,
+        occurredAt: eventOccurredAt,
+      };
+      setScenarioContext(ctx);
+
+      setScenarioStep(3);
+
+      // 4) Maintain a "High value last 30 days" audience in the CDP
+      const audienceId = await ensureDefaultHighValueAudience();
+
+      const rebuildRes = await fetch(
+        `${API_BASE}/audiences/${audienceId}/rebuild`,
+        {
+          method: "POST",
+        }
+      );
+      if (!rebuildRes.ok) {
+        const body = await rebuildRes.json().catch(() => ({}));
         throw new Error(body.error || "Failed to rebuild audience");
       }
 
-      const body = await res.json();
-      showMessage(`Rebuilt audience ${id}, added ${body.added_members} members`);
-      await fetchAudiences();
+      // Refresh lists
+      await Promise.all([fetchProfiles(), fetchAudiences()]);
+
+      const p = profileAfterTrack || profileAfterIdentify || null;
+      if (p) {
+        setSelectedProfile(p);
+        await loadProfileEvents(p.id);
+        const evalResult = evaluateHybridAudience(p, ctx);
+        setHybridEval(evalResult);
+      }
+
+      setScenarioStep(4);
+      showMessage("Checkout simulation complete.");
     } catch (err: any) {
-      console.error(err);
-      showError(err.message || "Error rebuilding audience");
+      console.error("runCheckoutSimulation error:", err);
+      showError(err.message || "Failed to run checkout simulation.");
+      setScenarioStep(0);
+    } finally {
+      setLoadingScenario(false);
     }
   }
 
   function handleExportAudience(id: number) {
-    // Just open the CSV in a new tab
     window.open(`${API_BASE}/audiences/${id}/export`, "_blank");
   }
 
+  const stepStyle = (stepNumber: number): React.CSSProperties => ({
+    flex: 1,
+    padding: "0.75rem",
+    borderRadius: 8,
+    border:
+      scenarioStep >= stepNumber
+        ? "2px solid #3498db"
+        : "1px solid #ddd",
+    background:
+      scenarioStep >= stepNumber ? "#eaf4ff" : "#f8f8f8",
+    fontSize: 13,
+  });
+
+  const offerExplanation = buildOfferExplanation(hybridEval);
+
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", padding: "1.5rem", maxWidth: 1200, margin: "0 auto" }}>
-      <h1>Mini CDP Demo</h1>
-      <p style={{ color: "#555" }}>
-        Collect → Unify → Segment → Activate, backed by your Node + Postgres mini CDP.
+    <div
+      style={{
+        fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+        padding: "1.5rem",
+        maxWidth: 1200,
+        margin: "0 auto",
+      }}
+    >
+      <h1>Mini CDP · Hybrid Audience Checkout Demo</h1>
+      <p style={{ color: "#555", maxWidth: 840 }}>
+        This demo shows how a checkout platform can use a{" "}
+        <strong>hybrid audience</strong> – combining{" "}
+        <strong>warehouse-style aggregates</strong> (e.g., lifetime spend) and{" "}
+        <strong>real-time session signals</strong> (current basket, amount) – to decide
+        which offer or experience to show at checkout.
       </p>
 
       {message && (
-        <div style={{ background: "#e6ffed", border: "1px solid #2ecc71", padding: "0.5rem 0.75rem", marginBottom: "1rem" }}>
+        <div
+          style={{
+            background: "#e6ffed",
+            border: "1px solid #2ecc71",
+            padding: "0.5rem 0.75rem",
+            marginBottom: "1rem",
+            borderRadius: 4,
+          }}
+        >
           {message}
         </div>
       )}
       {error && (
-        <div style={{ background: "#ffecec", border: "1px solid #e74c3c", padding: "0.5rem 0.75rem", marginBottom: "1rem" }}>
+        <div
+          style={{
+            background: "#ffecec",
+            border: "1px solid #e74c3c",
+            padding: "0.5rem 0.75rem",
+            marginBottom: "1rem",
+            borderRadius: 4,
+          }}
+        >
           {error}
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "1rem", alignItems: "flex-start" }}>
-        {/* Left column: forms + audiences */}
+      {/* Data flow diagram */}
+      <section
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: "1rem",
+          marginBottom: "1rem",
+        }}
+      >
+        <h2>Data Flow · Checkout → CDP → Hybrid Audience → Experience</h2>
+        <p style={{ fontSize: 13, color: "#666" }}>
+          The goal is to maximize revenue and relevance at checkout while protecting the
+          core purchase flow.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            gap: "0.75rem",
+            alignItems: "stretch",
+            marginTop: "0.5rem",
+          }}
+        >
+          <div style={stepStyle(1)}>
+            <strong>1. Checkout event</strong>
+            <div>A shopper buys a concert ticket on a partner site.</div>
+          </div>
+          <div style={{ alignSelf: "center" }}>→</div>
+          <div style={stepStyle(2)}>
+            <strong>2. Collect &amp; unify</strong>
+            <div>
+              CDP ingests <code>/identify</code> + <code>/track</code>, updates the
+              unified profile, and aggregates spend.
+            </div>
+          </div>
+          <div style={{ alignSelf: "center" }}>→</div>
+          <div style={stepStyle(3)}>
+            <strong>3. Hybrid audience</strong>
+            <div>
+              A high-value base segment from the warehouse is intersected with real-time
+              checkout context.
+            </div>
+          </div>
+          <div style={{ alignSelf: "center" }}>→</div>
+          <div style={stepStyle(4)}>
+            <strong>4. Experience decision</strong>
+            <div>
+              The platform chooses a premium, loyalty, acquisition, or control experience
+              for this shopper.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Main layout */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1.2fr 1fr",
+          gap: "1rem",
+          alignItems: "flex-start",
+        }}
+      >
+        {/* Left: Simulation + audiences + hybrid explanation */}
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: "1rem" }}>
-            <h2>Identify / Upsert Profile</h2>
-            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.5rem" }}>
+          {/* Simulation */}
+          <section
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              padding: "1rem",
+            }}
+          >
+            <h2>Simulate a Checkout</h2>
+            <p style={{ fontSize: 13, color: "#666" }}>
+              Enter simple shopper details, then run the simulation. The app will send
+              identity and purchase events into the CDP, rebuild a high-value audience,
+              and evaluate a hybrid audience for this session.
+            </p>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                runCheckoutSimulation();
+              }}
+              style={{ display: "grid", gap: "0.5rem", marginTop: "0.5rem" }}
+            >
               <div>
                 <label>Email</label>
                 <input
                   type="email"
-                  value={idEmail}
-                  onChange={(e) => setIdEmail(e.target.value)}
+                  value={scenarioEmail}
+                  onChange={(e) => setScenarioEmail(e.target.value)}
                   style={{ width: "100%" }}
                 />
               </div>
@@ -286,174 +521,277 @@ const App: React.FC = () => {
                 <label>User ID</label>
                 <input
                   type="text"
-                  value={idUserId}
-                  onChange={(e) => setIdUserId(e.target.value)}
+                  value={scenarioUserId}
+                  onChange={(e) => setScenarioUserId(e.target.value)}
                   style={{ width: "100%" }}
                 />
               </div>
               <div>
-                <label>Anonymous ID</label>
-                <input
-                  type="text"
-                  value={idAnon}
-                  onChange={(e) => setIdAnon(e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div>
-                <label>Traits (JSON)</label>
-                <textarea
-                  value={idTraits}
-                  onChange={(e) => setIdTraits(e.target.value)}
-                  rows={3}
-                  style={{ width: "100%", fontFamily: "monospace" }}
-                />
-              </div>
-              <button type="submit" style={{ padding: "0.4rem 0.8rem" }}>
-                Save Profile
-              </button>
-            </form>
-          </section>
-
-          <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: "1rem" }}>
-            <h2>Track Event</h2>
-            <form onSubmit={handleTrack} style={{ display: "grid", gap: "0.5rem" }}>
-              <div>
-                <label>Event Type</label>
-                <input
-                  type="text"
-                  value={eventType}
-                  onChange={(e) => setEventType(e.target.value)}
-                  style={{ width: "100%" }}
-                />
-                <small>Try "page_view" or "purchase"</small>
-              </div>
-              <div>
-                <label>User ID</label>
-                <input
-                  type="text"
-                  value={evUserId}
-                  onChange={(e) => setEvUserId(e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div>
-                <label>Anonymous ID</label>
-                <input
-                  type="text"
-                  value={evAnon}
-                  onChange={(e) => setEvAnon(e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div>
-                <label>Amount (for purchase)</label>
+                <label>Checkout amount (USD)</label>
                 <input
                   type="number"
                   step="0.01"
-                  value={evAmount}
-                  onChange={(e) => setEvAmount(e.target.value)}
+                  value={scenarioAmount}
+                  onChange={(e) => setScenarioAmount(e.target.value)}
                   style={{ width: "100%" }}
                 />
               </div>
               <div>
-                <label>Properties (JSON)</label>
-                <textarea
-                  value={evProps}
-                  onChange={(e) => setEvProps(e.target.value)}
-                  rows={3}
-                  style={{ width: "100%", fontFamily: "monospace" }}
+                <label>Category</label>
+                <input
+                  type="text"
+                  value={scenarioCategory}
+                  onChange={(e) => setScenarioCategory(e.target.value)}
+                  style={{ width: "100%" }}
                 />
+                <small style={{ fontSize: 11, color: "#777" }}>
+                  e.g. "Concert ticket", "Food delivery", "Rideshare"
+                </small>
               </div>
-              <button type="submit" style={{ padding: "0.4rem 0.8rem" }}>
-                Track Event
+              <button
+                type="submit"
+                disabled={loadingScenario}
+                style={{
+                  padding: "0.5rem 0.9rem",
+                  marginTop: "0.25rem",
+                  cursor: loadingScenario ? "wait" : "pointer",
+                }}
+              >
+                {loadingScenario
+                  ? "Running checkout simulation..."
+                  : "Run checkout simulation"}
               </button>
             </form>
           </section>
 
-          <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: "1rem" }}>
-            <h2>Audiences</h2>
+          {/* Hybrid audience explanation */}
+          <section
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              padding: "1rem",
+            }}
+          >
+            <h2>Hybrid Audience Evaluation</h2>
+            <p style={{ fontSize: 13, color: "#666" }}>
+              A hybrid audience combines:
+              <br />
+              <strong>Warehouse-style signals</strong> (aggregated spend, orders, LTV){" "}
+              and <strong>real-time signals</strong> (this session’s basket and intent).
+            </p>
 
-            <form onSubmit={handleCreateAudience} style={{ display: "grid", gap: "0.5rem", marginBottom: "1rem" }}>
+            {hybridEval && selectedProfile && scenarioContext ? (
               <div>
-                <label>Name</label>
-                <input
-                  type="text"
-                  value={audName}
-                  onChange={(e) => setAudName(e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div>
-                <label>Definition (JSON)</label>
-                <textarea
-                  value={audDef}
-                  onChange={(e) => setAudDef(e.target.value)}
-                  rows={4}
-                  style={{ width: "100%", fontFamily: "monospace" }}
-                />
-              </div>
-              <button type="submit" style={{ padding: "0.4rem 0.8rem" }}>
-                Create Audience
-              </button>
-            </form>
-
-            <div>
-              <h3>Existing Audiences</h3>
-              {audiences.length === 0 ? (
-                <p style={{ color: "#777" }}>No audiences yet.</p>
-              ) : (
-                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                  {audiences.map((a) => (
-                    <li
-                      key={a.id}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "0.75rem",
+                    marginTop: "0.5rem",
+                  }}
+                >
+                  <div
+                    style={{
+                      border: "1px solid #ddd",
+                      borderRadius: 6,
+                      padding: "0.5rem",
+                    }}
+                  >
+                    <strong style={{ fontSize: 13 }}>Warehouse-style signals</strong>
+                    <ul
                       style={{
-                        borderBottom: "1px solid #eee",
-                        padding: "0.5rem 0",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: "0.5rem",
+                        margin: "0.5rem 0 0",
+                        paddingLeft: "1.1rem",
+                        fontSize: 12,
                       }}
                     >
+                      <li>
+                        Total spend: <strong>${hybridEval.totalSpend.toFixed(2)}</strong>{" "}
+                        (threshold: ≥ $300)
+                      </li>
+                      <li>
+                        Last seen:{" "}
+                        {hybridEval.lastSeenDays !== null
+                          ? `${hybridEval.lastSeenDays.toFixed(1)} days ago`
+                          : "n/a"}
+                      </li>
+                      <li>
+                        Segment membership:{" "}
+                        {hybridEval.isWarehouseSegment ? (
+                          <span style={{ color: "#27ae60" }}>High-value segment</span>
+                        ) : (
+                          <span style={{ color: "#c0392b" }}>Not high-value</span>
+                        )}
+                      </li>
+                    </ul>
+                  </div>
+                  <div
+                    style={{
+                      border: "1px solid #ddd",
+                      borderRadius: 6,
+                      padding: "0.5rem",
+                    }}
+                  >
+                    <strong style={{ fontSize: 13 }}>Real-time session signals</strong>
+                    <ul
+                      style={{
+                        margin: "0.5rem 0 0",
+                        paddingLeft: "1.1rem",
+                        fontSize: 12,
+                      }}
+                    >
+                      <li>
+                        Current amount:{" "}
+                        <strong>${hybridEval.amount.toFixed(2)}</strong> (threshold: ≥
+                        $100)
+                      </li>
+                      <li>Category: {hybridEval.category}</li>
+                      <li>
+                        Session qualification:{" "}
+                        {hybridEval.isRealtimeQualified ? (
+                          <span style={{ color: "#27ae60" }}>High-intent session</span>
+                        ) : (
+                          <span style={{ color: "#c0392b" }}>Standard session</span>
+                        )}
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: "0.75rem",
+                    padding: "0.75rem",
+                    borderRadius: 6,
+                    border: "1px solid #3498db",
+                    background: "#eaf4ff",
+                    fontSize: 13,
+                  }}
+                >
+                  <strong>
+                    Hybrid audience membership:{" "}
+                    {hybridEval.isHybridMember ? (
+                      <span style={{ color: "#27ae60" }}>YES</span>
+                    ) : (
+                      <span style={{ color: "#c0392b" }}>NO</span>
+                    )}
+                  </strong>
+                  {offerExplanation && (
+                    <div style={{ marginTop: "0.25rem" }}>{offerExplanation}</div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: "#777" }}>
+                Run a checkout simulation and select a profile to see the hybrid audience
+                decision.
+              </p>
+            )}
+          </section>
+
+          {/* CDP audiences */}
+          <section
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              padding: "1rem",
+            }}
+          >
+            <h2>CDP Audiences (Warehouse-centric)</h2>
+            <p style={{ fontSize: 13, color: "#666" }}>
+              The CDP maintains longer-lived audiences (e.g., “High value last 30 days”)
+              using aggregated profile/event data. Real-time logic then intersects these
+              audiences with current session context at decision time.
+            </p>
+            {audiences.length === 0 ? (
+              <p style={{ color: "#777" }}>No audiences yet.</p>
+            ) : (
+              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {audiences.map((a) => (
+                  <li
+                    key={a.id}
+                    style={{
+                      borderBottom: "1px solid #eee",
+                      padding: "0.5rem 0",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: "0.5rem",
+                    }}
+                  >
+                    <div>
                       <div>
-                        <div>
-                          <strong>{a.name}</strong> (id: {a.id})
-                        </div>
-                        <div style={{ fontSize: 12, color: "#777" }}>
-                          Last built: {a.last_built_at || "never"}
-                        </div>
+                        <strong>{a.name}</strong> (id: {a.id})
                       </div>
-                      <div style={{ display: "flex", gap: "0.25rem" }}>
-                        <button
-                          type="button"
-                          onClick={() => handleRebuildAudience(a.id)}
-                          style={{ padding: "0.25rem 0.5rem" }}
-                        >
-                          Rebuild
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleExportAudience(a.id)}
-                          style={{ padding: "0.25rem 0.5rem" }}
-                        >
-                          Export CSV
-                        </button>
+                      <div style={{ fontSize: 12, color: "#777" }}>
+                        Last built: {a.last_built_at || "never"}
                       </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                    </div>
+                    <div style={{ display: "flex", gap: "0.25rem" }}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          fetch(`${API_BASE}/audiences/${a.id}/rebuild`, {
+                            method: "POST",
+                          })
+                            .then(() => {
+                              showMessage(
+                                `Rebuilt audience ${a.id} (${a.name})`
+                              );
+                              fetchAudiences();
+                            })
+                            .catch((err) => {
+                              console.error(err);
+                              showError("Failed to rebuild audience");
+                            })
+                        }
+                        style={{ padding: "0.25rem 0.5rem" }}
+                      >
+                        Rebuild
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleExportAudience(a.id)}
+                        style={{ padding: "0.25rem 0.5rem" }}
+                      >
+                        Export CSV
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </div>
 
-        {/* Right column: profiles list + details */}
-        <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: "1rem", maxHeight: "80vh", overflowY: "auto" }}>
-          <h2>Profiles</h2>
+        {/* Right: Profiles & events */}
+        <div
+          style={{
+            border: "1px solid #ddd",
+            borderRadius: 8,
+            padding: "1rem",
+            maxHeight: "80vh",
+            overflowY: "auto",
+          }}
+        >
+          <h2>Profiles &amp; Events</h2>
+          <p style={{ fontSize: 13, color: "#666" }}>
+            Profiles are updated with each checkout. Think of <code>total_spend</code>{" "}
+            and <code>total_orders</code> as warehouse-style aggregates and the{" "}
+            <code>events</code> list as the real-time event stream that feeds the CDP.
+          </p>
+
           {profiles.length === 0 ? (
-            <p style={{ color: "#777" }}>No profiles yet. Use the forms on the left to create one.</p>
+            <p style={{ color: "#777" }}>
+              No profiles yet. Run the checkout simulation on the left to create one.
+            </p>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "0.5rem" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                gap: "0.5rem",
+              }}
+            >
               {profiles.map((p) => (
                 <button
                   key={p.id}
@@ -472,11 +810,16 @@ const App: React.FC = () => {
                   }}
                 >
                   <div>
-                    <strong>{p.email || p.user_id || p.anonymous_id || "(no ID)"}</strong>
+                    <strong>
+                      {p.email || p.user_id || p.anonymous_id || "(no ID)"}
+                    </strong>
                   </div>
                   <div style={{ fontSize: 12, color: "#777" }}>
-                    Orders: {p.total_orders} · Spend: {String(p.total_spend)} · Last seen:{" "}
-                    {p.last_seen_at ? new Date(p.last_seen_at).toLocaleString() : "n/a"}
+                    Orders: {p.total_orders} · Spend: {String(p.total_spend)} ·
+                    Last seen:{" "}
+                    {p.last_seen_at
+                      ? new Date(p.last_seen_at).toLocaleString()
+                      : "n/a"}
                   </div>
                 </button>
               ))}
@@ -485,7 +828,7 @@ const App: React.FC = () => {
 
           {selectedProfile && (
             <div style={{ marginTop: "1rem" }}>
-              <h3>Selected Profile</h3>
+              <h3>Selected profile</h3>
               <pre
                 style={{
                   background: "#f9f9f9",
@@ -502,7 +845,13 @@ const App: React.FC = () => {
               {profileEvents.length === 0 ? (
                 <p style={{ color: "#777" }}>No events yet.</p>
               ) : (
-                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                <ul
+                  style={{
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                  }}
+                >
                   {profileEvents.map((ev) => (
                     <li
                       key={ev.id}
@@ -530,32 +879,6 @@ const App: React.FC = () => {
                   ))}
                 </ul>
               )}
-
-<h4>Audiences</h4>
-              {audiences.length === 0 ? (
-                <p style={{ color: "#777" }}>No audiences yet.</p>
-              ) : (
-                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                  {audiences.map((a) => (
-                    <li key={a.id} style={{ borderBottom: "1px solid #eee", padding: "0.5rem 0" }}>
-                      <div><strong>{a.name}</strong> (id: {a.id})</div>
-                      <pre
-                        style={{
-                          background: "#f4f4f4",
-                          padding: "0.25rem 0.5rem",
-                          borderRadius: 4,
-                          fontSize: 11,
-                          overflowX: "auto",
-                        }}
-                      >
-                        {JSON.stringify(a.definition, null, 2)}
-                      </pre>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-
             </div>
           )}
         </div>

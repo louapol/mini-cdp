@@ -549,10 +549,72 @@ To simulate a hybrid audiences setup (operational store + warehouse), this repo 
 
 ---
 
-That’s it. Once your code matches the endpoints and schema above, someone should be able to:
+## Quick walkthrough for reviewers (2–3 minutes)
 
-1. Clone the repo
-2. Run Docker + `npm install`
-3. Create the DB schema
-4. Start the server
-5. Hit the APIs and see profiles, events, and audiences flowing end to end.
+This demo shows how a checkout platform can use a **hybrid audience** – combining warehouse-style aggregates and real-time session context – to decide which experience to show at checkout.
+
+1. **Start the stack**
+
+   - Backend (Node + Postgres):
+     - `docker compose up -d db`
+     - `npm run dev`
+   - Frontend (React UI):
+     - `cd ui`
+     - `npm run dev`
+   - Open the UI at `http://localhost:5173`.
+
+2. **Simulate a checkout**
+
+   - In **“Simulate a Checkout”**, enter:
+     - Email and/or User ID
+     - Checkout amount (e.g. `120.00`)
+     - Category (e.g. `Concert ticket`)
+   - Click **“Run checkout simulation”**.
+   - Under the hood, the app:
+     - Calls `/identify` to upsert a unified profile (with traits that could come from a warehouse/CRM).
+     - Calls `/track` with a `purchase` event, amount, and category.
+     - Rebuilds a **“High value last 30 days”** audience in the CDP.
+
+3. **See the data flow**
+
+   At the top, the “Data Flow” strip lights up as the simulation runs:
+
+   1. Checkout event on a partner site  
+   2. CDP collects & unifies identity (`/identify` + `/track`)  
+   3. Hybrid audience evaluated (warehouse + real-time)  
+   4. Experience decision for this shopper  
+
+4. **Inspect profiles and events**
+
+   - On the right, under **“Profiles & Events”**, a new profile appears with:
+     - `total_spend`, `total_orders`, `last_seen_at` (modeled as warehouse-style aggregates)
+     - A list of events (real-time event stream)
+   - Click a profile to see:
+     - The full JSON representation (identity + traits)
+     - The ordered event history (including the checkout you just simulated)
+
+5. **Understand the hybrid audience logic**
+
+   - In **“Hybrid Audience Evaluation”**, the UI explains:
+     - **Warehouse-style signals**: total spend, recency, high-value segment membership.
+     - **Real-time signals**: this session’s amount + category (e.g. high-value concert checkout).
+   - The hybrid audience is **intersection-based**:
+     - High LTV customer **and** high-intent, high-value session → qualifies for a **premium experience**.
+     - Only one side (warehouse or real-time) → gets loyalty or acquisition-style experiences.
+     - Neither → falls back to a control / generic experience.
+
+6. **Review CDP audiences and activation**
+
+   - In **“CDP Audiences (Warehouse-centric)”**, you can:
+     - See the **“High value last 30 days”** audience maintained by the CDP.
+     - Click **Rebuild** to recompute membership from profile/event tables.
+     - Click **Export CSV** to simulate syncing this audience to downstream channels.
+
+7. **Where to look in the code**
+
+   - **CDP API & data model**: `src/index.ts`
+     - `/identify`, `/track`, `/audiences`, `/audiences/:id/rebuild`, `/audiences/:id/export`
+   - **Hybrid audience + UI logic**: `ui/src/App.tsx`
+     - Checkout simulation, data flow visualization, hybrid audience evaluation.
+   - **Warehouse-style export (optional)**: `etl/export_profiles_to_bigquery.ts`
+     - Minimal ETL script showing how profile aggregates would be landed in a warehouse (e.g. BigQuery) for deeper audience modeling.
