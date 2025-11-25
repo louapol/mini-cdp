@@ -66,6 +66,7 @@ This repo focuses on the core data model and decision logic, not the full produc
 - audiences (id, name, definition JSON, last_built_at)
 - audience_members (audience_id, profile_id, added_at)
 
+```mermaid
 erDiagram
   PROFILES {
     int        id PK
