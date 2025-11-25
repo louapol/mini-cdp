@@ -109,6 +109,7 @@ erDiagram
   PROFILES ||--o{ EVENTS : "has many events"
   PROFILES ||--o{ AUDIENCE_MEMBERS : "is in many audiences"
   AUDIENCES ||--o{ AUDIENCE_MEMBERS : "has many members"
+```
 
 **Identity rules (simple, deterministic):**
 
