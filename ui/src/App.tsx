@@ -10,6 +10,8 @@ interface Profile {
   total_orders: number;
   total_spend: string | number;
   last_seen_at: string;
+  first_seen_at?: string;
+  traits?: any;
 }
 
 interface EventRecord {
@@ -136,7 +138,20 @@ const App: React.FC = () => {
   }
 
   async function selectProfile(p: Profile) {
-    setSelectedProfile(p);
+    // Fetch full profile details with traits
+    try {
+      const res = await fetch(`${API_BASE}/profiles/${p.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        const fullProfile = { ...p, ...data.profile };
+        setSelectedProfile(fullProfile);
+      } else {
+        setSelectedProfile(p);
+      }
+    } catch (err) {
+      console.error("Failed to fetch full profile:", err);
+      setSelectedProfile(p);
+    }
     setHybridEval(
       scenarioContext ? evaluateHybridAudience(p, scenarioContext) : null
     );
@@ -378,6 +393,100 @@ const App: React.FC = () => {
 
   const offerExplanation = buildOfferExplanation(hybridEval);
 
+  // Helper function to format event description
+  function formatEventDescription(event: EventRecord): string {
+    const props = event.properties || {};
+    switch (event.event_type.toLowerCase()) {
+      case "purchase":
+        return `Purchased ${props.category || "item"} for $${Number(props.amount || 0).toFixed(2)}`;
+      case "page_view":
+        return `Viewed ${props.page || props.url || "page"}`;
+      case "product_viewed":
+        return `Viewed product: ${props.product_name || props.name || "product"}`;
+      case "cart_added":
+        return `Added ${props.product_name || "item"} to cart`;
+      case "checkout_started":
+        return `Started checkout`;
+      default:
+        return event.event_type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+    }
+  }
+
+  // Helper function to format date
+  function formatDate(dateString: string): string {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+    return date.toLocaleDateString();
+  }
+
+  // Helper function to determine campaign eligibility
+  function getCampaignEligibility(profile: Profile | null): {
+    eligible: boolean;
+    reason: string;
+    suggestedCampaign: string;
+  } {
+    if (!profile) {
+      return {
+        eligible: false,
+        reason: "No profile selected",
+        suggestedCampaign: "None",
+      };
+    }
+
+    const totalSpend = Number(profile.total_spend || 0);
+    const totalOrders = Number(profile.total_orders || 0);
+
+    // Campaign rules
+    if (totalSpend >= 500 && totalOrders >= 5) {
+      return {
+        eligible: true,
+        reason: "VIP customer with high lifetime value",
+        suggestedCampaign: "VIP Exclusive Offer",
+      };
+    }
+
+    if (totalSpend >= 200) {
+      return {
+        eligible: true,
+        reason: "High-value customer",
+        suggestedCampaign: "Loyalty Rewards Campaign",
+      };
+    }
+
+    if (totalOrders === 0) {
+      return {
+        eligible: true,
+        reason: "New customer - no purchases yet",
+        suggestedCampaign: "Welcome & First Purchase Incentive",
+      };
+    }
+
+    if (totalOrders > 0 && totalSpend < 50) {
+      return {
+        eligible: true,
+        reason: "Low engagement customer",
+        suggestedCampaign: "Re-engagement Campaign",
+      };
+    }
+
+    return {
+      eligible: true,
+      reason: "Regular customer",
+      suggestedCampaign: "General Promotional Campaign",
+    };
+  }
+
+  const campaignEligibility = getCampaignEligibility(selectedProfile);
+
   return (
     <div
       style={{
@@ -387,13 +496,11 @@ const App: React.FC = () => {
         margin: "0 auto",
       }}
     >
-      <h1>Mini CDP · Hybrid Audience Checkout Demo</h1>
+      <h1>Customer Data Platform (CDP) Demo</h1>
       <p style={{ color: "#555", maxWidth: 840 }}>
-        This demo shows how a checkout platform can use a{" "}
-        <strong>hybrid audience</strong> – combining{" "}
-        <strong>warehouse-style aggregates</strong> (e.g., lifetime spend) and{" "}
-        <strong>real-time session signals</strong> (current basket, amount) – to decide
-        which offer or experience to show at checkout.
+        View unified customer profiles, see their activity timeline, and understand how
+        personalized campaigns are automatically triggered based on customer behavior and
+        profile data.
       </p>
 
       {message && (
@@ -495,11 +602,10 @@ const App: React.FC = () => {
               padding: "1rem",
             }}
           >
-            <h2>Simulate a Checkout</h2>
+            <h2>Create Example Customer</h2>
             <p style={{ fontSize: 13, color: "#666" }}>
-              Enter simple shopper details, then run the simulation. The app will send
-              identity and purchase events into the CDP, rebuild a high-value audience,
-              and evaluate a hybrid audience for this session.
+              Enter customer details to create a new profile. This will simulate a purchase
+              event and automatically update the customer's profile in the CDP system.
             </p>
             <form
               onSubmit={(e) => {
@@ -527,7 +633,7 @@ const App: React.FC = () => {
                 />
               </div>
               <div>
-                <label>Checkout amount (USD)</label>
+                <label>Purchase Amount (USD)</label>
                 <input
                   type="number"
                   step="0.01"
@@ -537,7 +643,7 @@ const App: React.FC = () => {
                 />
               </div>
               <div>
-                <label>Category</label>
+                <label>Product Category</label>
                 <input
                   type="text"
                   value={scenarioCategory}
@@ -555,11 +661,16 @@ const App: React.FC = () => {
                   padding: "0.5rem 0.9rem",
                   marginTop: "0.25rem",
                   cursor: loadingScenario ? "wait" : "pointer",
+                  background: "#3498db",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 4,
+                  fontWeight: 500,
                 }}
               >
                 {loadingScenario
-                  ? "Running checkout simulation..."
-                  : "Run checkout simulation"}
+                  ? "Creating customer..."
+                  : "Create Customer & Record Purchase"}
               </button>
             </form>
           </section>
@@ -572,12 +683,11 @@ const App: React.FC = () => {
               padding: "1rem",
             }}
           >
-            <h2>Hybrid Audience Evaluation</h2>
+            <h2>Real-Time Personalization Logic</h2>
             <p style={{ fontSize: 13, color: "#666" }}>
-              A hybrid audience combines:
-              <br />
-              <strong>Warehouse-style signals</strong> (aggregated spend, orders, LTV){" "}
-              and <strong>real-time signals</strong> (this session’s basket and intent).
+              When a customer performs an action, the system combines their historical
+              behavior (past purchases, spending patterns) with their current activity
+              (what they're doing right now) to determine the best personalized experience.
             </p>
 
             {hybridEval && selectedProfile && scenarioContext ? (
@@ -763,123 +873,390 @@ const App: React.FC = () => {
           </section>
         </div>
 
-        {/* Right: Profiles & events */}
+        {/* Right: Customer Profile, Events & Campaigns */}
         <div
           style={{
-            border: "1px solid #ddd",
-            borderRadius: 8,
-            padding: "1rem",
-            maxHeight: "80vh",
-            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: "1rem",
           }}
         >
-          <h2>Profiles &amp; Events</h2>
-          <p style={{ fontSize: 13, color: "#666" }}>
-            Profiles are updated with each checkout. Think of <code>total_spend</code>{" "}
-            and <code>total_orders</code> as warehouse-style aggregates and the{" "}
-            <code>events</code> list as the real-time event stream that feeds the CDP.
-          </p>
-
-          {profiles.length === 0 ? (
-            <p style={{ color: "#777" }}>
-              No profiles yet. Run the checkout simulation on the left to create one.
+          {/* Customer List */}
+          <section
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              padding: "1rem",
+            }}
+          >
+            <h2>Customer Profiles</h2>
+            <p style={{ fontSize: 13, color: "#666", marginTop: "0.25rem" }}>
+              Select a customer to view their unified profile, activity timeline, and campaign eligibility.
             </p>
-          ) : (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr",
-                gap: "0.5rem",
-              }}
-            >
-              {profiles.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => selectProfile(p)}
-                  style={{
-                    textAlign: "left",
-                    padding: "0.5rem",
-                    borderRadius: 6,
-                    border:
-                      selectedProfile && selectedProfile.id === p.id
-                        ? "2px solid #3498db"
-                        : "1px solid #ddd",
-                    background: "#fff",
-                    cursor: "pointer",
-                  }}
-                >
-                  <div>
-                    <strong>
-                      {p.email || p.user_id || p.anonymous_id || "(no ID)"}
-                    </strong>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#777" }}>
-                    Orders: {p.total_orders} · Spend: {String(p.total_spend)} ·
-                    Last seen:{" "}
-                    {p.last_seen_at
-                      ? new Date(p.last_seen_at).toLocaleString()
-                      : "n/a"}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
 
-          {selectedProfile && (
-            <div style={{ marginTop: "1rem" }}>
-              <h3>Selected profile</h3>
-              <pre
+            {profiles.length === 0 ? (
+              <p style={{ color: "#777", marginTop: "0.5rem" }}>
+                No customers yet. Run the checkout simulation to create a customer profile.
+              </p>
+            ) : (
+              <div
                 style={{
-                  background: "#f9f9f9",
-                  padding: "0.5rem",
-                  borderRadius: 4,
-                  fontSize: 12,
-                  overflowX: "auto",
+                  display: "grid",
+                  gridTemplateColumns: "1fr",
+                  gap: "0.5rem",
+                  marginTop: "0.75rem",
                 }}
               >
-                {JSON.stringify(selectedProfile, null, 2)}
-              </pre>
+                {profiles.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => selectProfile(p)}
+                    style={{
+                      textAlign: "left",
+                      padding: "0.75rem",
+                      borderRadius: 6,
+                      border:
+                        selectedProfile && selectedProfile.id === p.id
+                          ? "2px solid #3498db"
+                          : "1px solid #ddd",
+                      background:
+                        selectedProfile && selectedProfile.id === p.id
+                          ? "#eaf4ff"
+                          : "#fff",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                      {p.email || p.user_id || p.anonymous_id || "Anonymous Customer"}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#666" }}>
+                      {p.total_orders} order{p.total_orders !== 1 ? "s" : ""} · ${Number(p.total_spend || 0).toFixed(2)} total
+                      {p.last_seen_at && ` · Last seen ${formatDate(p.last_seen_at)}`}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
 
-              <h4>Events</h4>
-              {profileEvents.length === 0 ? (
-                <p style={{ color: "#777" }}>No events yet.</p>
-              ) : (
-                <ul
+          {/* Unified Customer Profile */}
+          {selectedProfile && (
+            <>
+              <section
+                style={{
+                  border: "1px solid #ddd",
+                  borderRadius: 8,
+                  padding: "1rem",
+                  background: "#fff",
+                }}
+              >
+                <h2>Customer Profile</h2>
+                <div
                   style={{
-                    listStyle: "none",
-                    padding: 0,
-                    margin: 0,
+                    marginTop: "1rem",
+                    padding: "1rem",
+                    background: "#f8f9fa",
+                    borderRadius: 6,
                   }}
                 >
-                  {profileEvents.map((ev) => (
-                    <li
-                      key={ev.id}
+                  {/* Customer Identity */}
+                  <div style={{ marginBottom: "1rem" }}>
+                    <h3 style={{ margin: "0 0 0.5rem 0", fontSize: 16 }}>
+                      {selectedProfile.traits?.name ||
+                        selectedProfile.email?.split("@")[0] ||
+                        "Customer"}
+                    </h3>
+                    <div style={{ fontSize: 14, color: "#555" }}>
+                      {selectedProfile.email && (
+                        <div style={{ marginBottom: "0.25rem" }}>
+                          <strong>Email:</strong> {selectedProfile.email}
+                        </div>
+                      )}
+                      {selectedProfile.user_id && (
+                        <div style={{ marginBottom: "0.25rem" }}>
+                          <strong>User ID:</strong> {selectedProfile.user_id}
+                        </div>
+                      )}
+                      {selectedProfile.first_seen_at && (
+                        <div style={{ fontSize: 12, color: "#777", marginTop: "0.5rem" }}>
+                          Customer since {new Date(selectedProfile.first_seen_at).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Key Metrics */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr",
+                      gap: "0.75rem",
+                      marginTop: "1rem",
+                      paddingTop: "1rem",
+                      borderTop: "1px solid #ddd",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 12, color: "#666", marginBottom: "0.25rem" }}>
+                        Total Orders
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 600, color: "#2c3e50" }}>
+                        {selectedProfile.total_orders || 0}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "#666", marginBottom: "0.25rem" }}>
+                        Total Spend
+                      </div>
+                      <div style={{ fontSize: 24, fontWeight: 600, color: "#27ae60" }}>
+                        ${Number(selectedProfile.total_spend || 0).toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "#666", marginBottom: "0.25rem" }}>
+                        Last Activity
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: "#555" }}>
+                        {selectedProfile.last_seen_at
+                          ? formatDate(selectedProfile.last_seen_at)
+                          : "Never"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Customer Traits */}
+                  {selectedProfile.traits &&
+                    Object.keys(selectedProfile.traits).length > 0 && (
+                      <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #ddd" }}>
+                        <div style={{ fontSize: 12, color: "#666", marginBottom: "0.5rem" }}>
+                          Additional Information
+                        </div>
+                        <div style={{ fontSize: 13 }}>
+                          {Object.entries(selectedProfile.traits).map(([key, value]) => (
+                            <div key={key} style={{ marginBottom: "0.25rem" }}>
+                              <strong>{key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}:</strong>{" "}
+                              {String(value)}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                </div>
+              </section>
+
+              {/* Event Timeline */}
+              <section
+                style={{
+                  border: "1px solid #ddd",
+                  borderRadius: 8,
+                  padding: "1rem",
+                  background: "#fff",
+                }}
+              >
+                <h2>Activity Timeline</h2>
+                <p style={{ fontSize: 13, color: "#666", marginTop: "0.25rem" }}>
+                  Recent customer activity and events
+                </p>
+
+                {profileEvents.length === 0 ? (
+                  <p style={{ color: "#777", marginTop: "0.75rem" }}>
+                    No activity recorded yet for this customer.
+                  </p>
+                ) : (
+                  <div style={{ marginTop: "1rem" }}>
+                    <div
                       style={{
-                        borderBottom: "1px solid #eee",
-                        padding: "0.5rem 0",
+                        position: "relative",
+                        paddingLeft: "1.5rem",
                       }}
                     >
-                      <div>
-                        <strong>{ev.event_type}</strong> ·{" "}
-                        {new Date(ev.occurred_at).toLocaleString()}
-                      </div>
-                      <pre
+                      {/* Timeline line */}
+                      <div
                         style={{
-                          background: "#f4f4f4",
-                          padding: "0.25rem 0.5rem",
-                          borderRadius: 4,
-                          fontSize: 11,
-                          overflowX: "auto",
+                          position: "absolute",
+                          left: "0.5rem",
+                          top: 0,
+                          bottom: 0,
+                          width: "2px",
+                          background: "#e0e0e0",
                         }}
-                      >
-                        {JSON.stringify(ev.properties, null, 2)}
-                      </pre>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                      />
+                      {profileEvents.map((ev) => (
+                        <div
+                          key={ev.id}
+                          style={{
+                            position: "relative",
+                            marginBottom: "1rem",
+                            paddingLeft: "1rem",
+                          }}
+                        >
+                          {/* Timeline dot */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              left: "-0.75rem",
+                              top: "0.25rem",
+                              width: "12px",
+                              height: "12px",
+                              borderRadius: "50%",
+                              background: "#3498db",
+                              border: "2px solid #fff",
+                              boxShadow: "0 0 0 2px #3498db",
+                            }}
+                          />
+                          {/* Event content */}
+                          <div
+                            style={{
+                              background: "#f8f9fa",
+                              padding: "0.75rem",
+                              borderRadius: 6,
+                              borderLeft: "3px solid #3498db",
+                            }}
+                          >
+                            <div style={{ fontWeight: 500, marginBottom: "0.25rem" }}>
+                              {formatEventDescription(ev)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#666" }}>
+                              {formatDate(ev.occurred_at)}
+                            </div>
+                            {ev.properties &&
+                              Object.keys(ev.properties).length > 0 &&
+                              ev.properties.amount && (
+                                <div
+                                  style={{
+                                    marginTop: "0.5rem",
+                                    padding: "0.5rem",
+                                    background: "#fff",
+                                    borderRadius: 4,
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  {Object.entries(ev.properties)
+                                    .filter(([k]) => k !== "amount" || ev.event_type === "purchase")
+                                    .slice(0, 3)
+                                    .map(([key, value]) => (
+                                      <div key={key}>
+                                        <strong>{key.replace(/_/g, " ")}:</strong> {String(value)}
+                                      </div>
+                                    ))}
+                                </div>
+                              )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {/* Campaign Trigger Section */}
+              <section
+                style={{
+                  border: "1px solid #ddd",
+                  borderRadius: 8,
+                  padding: "1rem",
+                  background: "#fff",
+                }}
+              >
+                <h2>Campaign Eligibility</h2>
+                <p style={{ fontSize: 13, color: "#666", marginTop: "0.25rem" }}>
+                  Based on this customer's profile, here's what campaigns they're eligible for
+                </p>
+
+                <div
+                  style={{
+                    marginTop: "1rem",
+                    padding: "1rem",
+                    background: campaignEligibility.eligible ? "#e6ffed" : "#fff3cd",
+                    borderRadius: 6,
+                    border: `1px solid ${campaignEligibility.eligible ? "#27ae60" : "#f39c12"}`,
+                  }}
+                >
+                  <div style={{ marginBottom: "0.75rem" }}>
+                    <div style={{ fontSize: 14, color: "#666", marginBottom: "0.25rem" }}>
+                      Eligibility Status
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 600,
+                        color: campaignEligibility.eligible ? "#27ae60" : "#f39c12",
+                      }}
+                    >
+                      {campaignEligibility.eligible ? "✓ Eligible" : "Not Eligible"}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: "0.75rem" }}>
+                    <div style={{ fontSize: 14, color: "#666", marginBottom: "0.25rem" }}>
+                      Reason
+                    </div>
+                    <div style={{ fontSize: 13 }}>{campaignEligibility.reason}</div>
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: "0.75rem",
+                      paddingTop: "0.75rem",
+                      borderTop: "1px solid rgba(0,0,0,0.1)",
+                    }}
+                  >
+                    <div style={{ fontSize: 14, color: "#666", marginBottom: "0.5rem" }}>
+                      Suggested Campaign
+                    </div>
+                    <div
+                      style={{
+                        padding: "0.75rem",
+                        background: "#fff",
+                        borderRadius: 4,
+                        border: "1px solid #ddd",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                        {campaignEligibility.suggestedCampaign}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        This customer would receive personalized messaging based on their purchase
+                        history and profile attributes.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: "1rem",
+                      padding: "0.75rem",
+                      background: "#fff",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      color: "#666",
+                    }}
+                  >
+                    <strong>How it works:</strong> When this customer performs an action (like viewing
+                    a product or starting checkout), the CDP evaluates their profile and automatically
+                    triggers the appropriate campaign, sending them personalized content via email,
+                    push notification, or on-site message.
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+
+          {!selectedProfile && profiles.length > 0 && (
+            <section
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 8,
+                padding: "1rem",
+                background: "#f8f9fa",
+                textAlign: "center",
+                color: "#666",
+              }}
+            >
+              Select a customer above to view their profile, activity timeline, and campaign eligibility.
+            </section>
           )}
         </div>
       </div>

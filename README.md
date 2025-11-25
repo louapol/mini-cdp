@@ -8,6 +8,55 @@ Collect: Ingest events and traits via HTTP APIs
 Unify: Build customer profiles with simple identity resolution
 Segment: Compute audiences from profile + event data
 
+
+This mini project models the core pieces of a Customer Data Platform (CDP) + a simple real-time decision engine for personalization at the moment of engagement.
+
+The core question is: given everything we know about a customer, and what they’re doing right now (e.g., viewing a product, checking out), what is the most relevant recommendation we can show with low latency?
+
+In a real system, you can’t afford to recompute a customer’s lifetime value, visit frequency, or segment membership on every request. Instead, you maintain pre-aggregated profile data in the background and combine it with real-time events at decision time. This repo simulates that “hybrid” approach:
+
+Background: events are used to maintain aggregated profile attributes (e.g., spend in the last 30 days, visit frequency).
+
+Real-time: when a new event comes in (e.g., a checkout), we combine that event with the existing profile and audience memberships to choose the best experience.
+
+The data model includes four tables:
+
+profiles – one row per customer, storing core identifiers and precomputed aggregates (e.g., total_spent_last_30d, visit_count, VIP flags). This allows us to read the key attributes we care about in a single, low-latency lookup instead of recalculating them in real time.
+
+events – an append-only log of customer interactions across channels (e.g., POS, web, OTT). This serves both as the source of truth for background aggregations and the representation of the “current” action.
+
+audiences – reusable segment definitions such as “high-value VIP” or “frequent visitor.” These represent the strategies we want to apply across large groups of customers.
+
+audience_members – a many-to-many mapping between profiles and audiences, since a single customer can belong to multiple segments.
+
+The UI in this repo simulates a simple checkout flow. When you submit a user_id and checkout_amount, the system:
+
+Ensures a profile exists for the user (and creates one if it doesn’t).
+
+Writes a new event to the events table and updates the corresponding profile aggregates based on historical events.
+
+Evaluates which audiences the customer belongs to, based on the latest profile attributes.
+
+Applies a simple decision rule to choose what to show: for example, VIP customers might see a premium upgrade offer, while others see a lower-risk cross-sell.
+
+This is not a full CDP implementation, but a minimal, self-contained demo that illustrates how I think about CDP data modeling and low-latency activation for commerce use cases.
+
+What this does not include yet:
+- identity resolution
+- streaming pipeline
+- multi-channel activation
+
+In a production environment, these concepts would typically be split across multiple layers:
+
+- A warehouse or lakehouse (e.g., Snowflake, or tables in Apache Iceberg/Delta Lake on object storage) would store raw and aggregated events for analytics and batch/micro-batch processing.
+- Batch or streaming jobs would maintain profile aggregates and audience memberships and publish them into an online store (e.g., DynamoDB as a key-value / document store) optimized for low-latency reads.
+- A real-time service (similar to the one in this demo) would:
+  - Ingest the current event,
+  - Fetch the latest profile and segment state from the online store, and
+  - Call into a recommendation/decision engine to select the personalized offer.
+
+This repo focuses on the core data model and decision logic, not the full production pipeline, but the same principles apply at scale.
+
 **Goal**: Ingest events + traits, unify into profiles, build 1 - 2 simple audiences, and export/activate them
 
 **Data Model**:
@@ -16,6 +65,49 @@ Segment: Compute audiences from profile + event data
 - events (id, profile_id?, anonymous_id, user_id, event_type, properties JSONB, occurred_at)
 - audiences (id, name, definition JSON, last_built_at)
 - audience_members (audience_id, profile_id, added_at)
+
+erDiagram
+  PROFILES {
+    int        id PK
+    text       primary_identifier
+    text       email
+    text       user_id
+    text       anonymous_id
+    jsonb      traits
+    int        total_orders
+    numeric    total_spend
+    timestamptz first_seen_at
+    timestamptz last_seen_at
+  }
+
+  EVENTS {
+    int        id PK
+    int        profile_id FK
+    text       user_id
+    text       anonymous_id
+    text       event_type
+    jsonb      properties
+    timestamptz occurred_at
+  }
+
+  AUDIENCES {
+    int        id PK
+    text       name
+    jsonb      definition
+    timestamptz created_at
+    timestamptz last_built_at
+  }
+
+  AUDIENCE_MEMBERS {
+    int        id PK
+    int        audience_id FK
+    int        profile_id FK
+    timestamptz added_at
+  }
+
+  PROFILES ||--o{ EVENTS : "has many events"
+  PROFILES ||--o{ AUDIENCE_MEMBERS : "is in many audiences"
+  AUDIENCES ||--o{ AUDIENCE_MEMBERS : "has many members"
 
 **Identity rules (simple, deterministic):**
 
